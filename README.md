@@ -1,5 +1,8 @@
 # Restaurant Visits Dashboard (Streamlit)
 
+## Acknowledgment 
+Per the assignment directions, this dashboard was generated with assistance from Claude.
+
 ## Run locally
     pip install -r requirements.txt
     cp .streamlit/secrets.toml.example .streamlit/secrets.toml   # then fill in values
