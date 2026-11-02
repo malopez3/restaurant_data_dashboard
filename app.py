@@ -299,7 +299,7 @@ with t2:
 sized = df.dropna(subset=["PartySize"]).copy()
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Avg party size", f"{sized['PartySize'].mean():.1f}" if not sized.empty else "n/a")
-m2.metric("Median wait (min)", f"{df['WaitTime'].median():.0f}")
+m2.metric("Average wait (min)", f"{df['WaitTime'].mean():.1f}")
 m3.metric("90th percentile wait (min)", f"{df['WaitTime'].quantile(0.9):.0f}")
 m4.metric("Longest wait (min)", f"{df['WaitTime'].max():.0f}")
 
@@ -319,7 +319,7 @@ with q1:
 with q2:
     st.subheader("Wait time distribution")
     fig = px.histogram(df, x="WaitTime", nbins=30, color_discrete_sequence=[ALCOHOL_COLOR])
-    fig.add_vline(x=df["WaitTime"].median(), line_dash="dash", annotation_text="median")
+    fig.add_vline(x=df["WaitTime"].mean(), line_dash="dash", annotation_text="average")
     fig.update_xaxes(title="Wait (minutes)")
     fig.update_yaxes(title="Visits")
     st.plotly_chart(style(fig), use_container_width=True)
