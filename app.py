@@ -250,7 +250,7 @@ with b:  # food vs alcohol
     fig.update_traces(textinfo="label+percent", textposition="inside",
                       hovertemplate="%{label}: $%{value:,.0f}<extra></extra>")
     fig.update_layout(showlegend=False)
-    show(fig, f"Food {money(food_total)} vs. alcohol {money(alcohol_total)}")
+    show(fig, "Food vs. Alcohol")
 
 with c:  # visit time
     timed = df.dropna(subset=["VisitHour"])
@@ -303,3 +303,11 @@ with d3:
     count_bar(df, "PaymentTypeName", "Payment method", "Most common payment methods")
 with d4:
     count_bar(df, "MealTypeName", "Meal type", "Most common meal types")
+
+# ------------------------------------------------------------ data table
+with st.expander("View underlying visits"):
+    st.dataframe(
+        df.drop(columns=["Month", "Year", "VisitHour"]).sort_values("VisitDate", ascending=False),
+        use_container_width=True,
+        hide_index=True,
+    )
