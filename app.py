@@ -100,16 +100,20 @@ def hour_label(h) -> str:
     return f"{int(h) % 12 or 12}{'AM' if h < 12 else 'PM'}"
 
 
-def show(fig, title):
-    """Apply the shared compact style (title inside the figure) and render."""
+def show(fig, title, legend_row=False):
+    """Apply the shared compact style (title inside the figure) and render.
+
+    legend_row=True puts the legend on its own line under the title (for long titles/legends).
+    """
     fig.update_layout(
-        title=dict(text=title, x=0, xanchor="left", y=0.97, font=dict(size=14)),
+        title=dict(text=title, x=0, xanchor="left", y=0.98, yanchor="top", font=dict(size=14)),
         height=CHART_H,
-        margin=dict(l=0, r=0, t=34, b=0),
+        margin=dict(l=0, r=0, t=60 if legend_row else 34, b=0),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         font=dict(size=11),
-        legend=dict(orientation="h", y=1.0, yanchor="bottom", x=1, xanchor="right",
+        legend=dict(orientation="h", y=1.0, yanchor="bottom",
+                    x=0 if legend_row else 1, xanchor="left" if legend_row else "right",
                     title_text="", font=dict(size=11)),
     )
     st.plotly_chart(fig, use_container_width=True, config=PLOT_CFG)
@@ -175,6 +179,7 @@ if st.sidebar.button("Refresh data"):
 df = data
 if isinstance(date_range, tuple) and len(date_range) == 2:
     df = df[(df["VisitDate"].dt.date >= date_range[0]) & (df["VisitDate"].dt.date <= date_range[1])]
+base = df  # all restaurants for the selected dates (comparison baseline)
 is_all = choice == ALL
 if not is_all:
     df = df[df["RestaurantID"] == label_to_id[choice]]
@@ -211,8 +216,20 @@ k2.metric(
 )
 k3.metric("Food spend", money(food_total))
 k4.metric("Alcohol spend", money(alcohol_total))
-k5.metric("Avg wait (min)", f"{df['WaitTime'].mean():.1f}")
-k6.metric("Avg party size", f"{df['PartySize'].mean():.1f}" if df["PartySize"].notna().any() else "n/a")
+
+def avg_metric(col, label, value_series, base_series):
+    """Average of the current selection; for one restaurant, also show the gap vs. all restaurants."""
+    val, ref = value_series.mean(), base_series.mean()
+    if pd.isna(val):
+        col.metric(label, "n/a")
+        return
+    delta = None if (is_all or pd.isna(ref)) else f"{val - ref:+.2f} vs all"
+    col.metric(label, f"{val:.2f}", delta=delta, delta_color="off",
+               help="Average over the visits in the current selection.")
+
+
+avg_metric(k5, "Avg wait (min)", df["WaitTime"], base["WaitTime"])
+avg_metric(k6, "Avg party size", df["PartySize"], base["PartySize"])
 
 # ------------------------------------------------------------------ row 1
 a, b, c = st.columns([3, 1.3, 2])
@@ -224,7 +241,7 @@ with a:  # visits per month (colored by year), yearly totals in the title
     fig = px.bar(m, x="Month", y="Visits", color="Year", color_discrete_sequence=SEQ)
     fig.update_xaxes(title=None, tickformat="%b %Y")
     fig.update_yaxes(title=None)
-    show(fig, "Visits per month (legend: total per year)")
+    show(fig, "Visits per month (yearly totals in legend)", legend_row=True)
 
 with b:  # food vs alcohol
     spend = pd.DataFrame({"Type": ["Food", "Alcohol"], "Total": [food_total, alcohol_total]})
