@@ -1,4 +1,5 @@
-"""Restaurant visits dashboard (Streamlit + Aiven MySQL)."""
+"""Restaurant visits dashboard (Streamlit + Aiven MySQL) - single-screen layout."""
+import html
 import os
 import tempfile
 
@@ -8,12 +9,34 @@ import streamlit as st
 from sqlalchemy import create_engine
 from sqlalchemy.engine import URL
 
-st.set_page_config(page_title="Restaurant Visits", page_icon="🍽️", layout="wide")
+st.set_page_config(
+    page_title="Restaurant Visits",
+    page_icon="🍽️",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
 ALL = "All restaurants (combined)"
 FOOD_COLOR = "#1f6f78"
 ALCOHOL_COLOR = "#c8872b"
 SEQ = ["#1f6f78", "#c8872b", "#7a9e7e", "#8c5e58", "#4b5d67", "#d9b26f", "#9fc5c8"]
+CHART_H = 235  # height of every chart in px; lower it if the page still scrolls on your screen
+PLOT_CFG = {"displayModeBar": False}
+
+# Tighten Streamlit's default spacing so everything fits on one screen.
+st.markdown(
+    """
+    <style>
+    .block-container {padding-top: 1.6rem; padding-bottom: 0.4rem; padding-left: 1.5rem; padding-right: 1.5rem;}
+    header[data-testid="stHeader"] {background: transparent; height: 2.2rem;}
+    div[data-testid="stVerticalBlock"] {gap: 0.35rem;}
+    [data-testid="stMetric"] {padding: 0;}
+    [data-testid="stMetricValue"] {font-size: 1.55rem; line-height: 1.2;}
+    [data-testid="stMetricLabel"] p {font-size: 0.78rem;}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 # ---------------------------------------------------------------- database
@@ -73,28 +96,37 @@ def money(x: float) -> str:
     return f"${x:,.0f}"
 
 
-def hour_label(h: int) -> str:
-    return f"{int(h) % 12 or 12} {'AM' if h < 12 else 'PM'}"
+def hour_label(h) -> str:
+    return f"{int(h) % 12 or 12}{'AM' if h < 12 else 'PM'}"
 
 
-def style(fig, height=340):
+def show(fig, title):
+    """Apply the shared compact style (title inside the figure) and render."""
     fig.update_layout(
-        height=height,
-        margin=dict(l=0, r=0, t=10, b=0),
+        title=dict(text=title, x=0, xanchor="left", y=0.97, font=dict(size=14)),
+        height=CHART_H,
+        margin=dict(l=0, r=0, t=34, b=0),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        legend_title_text="",
+        font=dict(size=11),
+        legend=dict(orientation="h", y=1.0, yanchor="bottom", x=1, xanchor="right",
+                    title_text="", font=dict(size=11)),
     )
-    return fig
+    st.plotly_chart(fig, use_container_width=True, config=PLOT_CFG)
 
 
-def count_chart(df, col, title_label):
-    counts = df[col].value_counts().rename_axis(title_label).reset_index(name="Visits")
-    fig = px.bar(counts, x="Visits", y=title_label, orientation="h",
-                 color_discrete_sequence=[FOOD_COLOR], text="Visits")
+def hbar(data, x, y, title, color):
+    """Horizontal bar chart with value labels and no x axis."""
+    fig = px.bar(data, x=x, y=y, orientation="h", text=x, color_discrete_sequence=[color])
     fig.update_yaxes(categoryorder="total ascending", title=None)
-    fig.update_xaxes(title=None)
-    return style(fig)
+    fig.update_xaxes(title=None, visible=False, range=[0, data[x].max() * 1.2])
+    fig.update_traces(textposition="outside", cliponaxis=False)
+    show(fig, title)
+
+
+def count_bar(df, col, label, title, color=FOOD_COLOR):
+    counts = df[col].value_counts().rename_axis(label).reset_index(name="Visits")
+    hbar(counts, "Visits", label, title, color)
 
 
 # -------------------------------------------------------------------- data
@@ -149,202 +181,108 @@ if not is_all:
 
 df = df.assign(FoodSpend=df["FoodBill"] * (1 - df["FoodDiscountPercentage"]) if net_food else df["FoodBill"])
 
-# -------------------------------------------------------------------- body
-st.title("All restaurants" if is_all else choice)
-if not is_all:
-    r = restaurants[restaurants["Label"] == choice].iloc[0]
-    st.caption(f"{r['City']}, {r['State']}")
-
+# ------------------------------------------------------------------ header
 if df.empty:
     st.info("No visits match these filters. Widen the date range to see data.")
     st.stop()
 
-food_total, alcohol_total = df["FoodSpend"].sum(), df["AlcoholBill"].sum()
-c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("Total visits", f"{len(df):,}")
-c2.metric("Unique customers", f"{df['CustomerID'].nunique():,}")
-c3.metric("Food spend", money(food_total))
-c4.metric("Alcohol spend", money(alcohol_total))
-c5.metric("Avg wait (min)", f"{df['WaitTime'].mean():.1f}")
-
-missing = df["CustomerID"].isna().sum()
-if missing:
-    st.caption(f"{missing:,} visits have no customer recorded and are excluded from unique-customer counts.")
-
-st.divider()
-
-# Visits over time
-left, right = st.columns([2, 1])
-with left:
-    st.subheader("Visits per month")
-    split = False
-    if is_all:
-        split = st.toggle("Split by restaurant", value=False)
-    if split:
-        m = df.groupby(["Month", "RestaurantName"]).size().reset_index(name="Visits")
-        fig = px.bar(m, x="Month", y="Visits", color="RestaurantName", color_discrete_sequence=SEQ)
-    else:
-        m = df.groupby("Month").size().reset_index(name="Visits")
-        fig = px.bar(m, x="Month", y="Visits", color_discrete_sequence=[FOOD_COLOR])
-    fig.update_xaxes(title=None)
-    st.plotly_chart(style(fig), use_container_width=True)
-with right:
-    st.subheader("Visits per year")
-    y = df.groupby("Year").size().reset_index(name="Visits")
-    fig = px.bar(y, x="Year", y="Visits", text="Visits", color_discrete_sequence=[FOOD_COLOR])
-    fig.update_xaxes(type="category", title=None)
-    st.plotly_chart(style(fig), use_container_width=True)
-
-# Per-restaurant comparison (combined view only)
 if is_all:
-    st.subheader("By restaurant")
-    per = df.groupby("RestaurantName").agg(
-        Visits=("VisitID", "count"), UniqueCustomers=("CustomerID", "nunique")
-    ).reset_index()
-    a, b = st.columns(2)
-    with a:
-        st.markdown("**Total visits**")
-        fig = px.bar(per, x="Visits", y="RestaurantName", orientation="h", text="Visits",
-                     color_discrete_sequence=[FOOD_COLOR])
-        fig.update_yaxes(categoryorder="total ascending", title=None)
-        fig.update_xaxes(title=None)
-        st.plotly_chart(style(fig), use_container_width=True)
-    with b:
-        st.markdown("**Unique customers**")
-        fig = px.bar(per, x="UniqueCustomers", y="RestaurantName", orientation="h", text="UniqueCustomers",
-                     color_discrete_sequence=[ALCOHOL_COLOR])
-        fig.update_yaxes(categoryorder="total ascending", title=None)
-        fig.update_xaxes(title=None)
-        st.plotly_chart(style(fig), use_container_width=True)
+    subtitle = f"{df['RestaurantID'].nunique()} locations"
+else:
+    r = restaurants[restaurants["Label"] == choice].iloc[0]
+    subtitle = f"{r['City']}, {r['State']}"
+span = f"{df['VisitDate'].min():%b %Y} – {df['VisitDate'].max():%b %Y}"
+st.markdown(
+    f"<span style='font-size:1.6rem;font-weight:700'>{'All restaurants' if is_all else html.escape(choice)}</span>"
+    f"&nbsp;&nbsp;<span style='opacity:.65'>{subtitle} · {span}</span>",
+    unsafe_allow_html=True,
+)
 
-# Spend
-st.subheader("Food vs. alcohol spend")
-s1, s2 = st.columns([1, 2])
-with s1:
+# --------------------------------------------------------------------- KPIs
+food_total, alcohol_total = df["FoodSpend"].sum(), df["AlcoholBill"].sum()
+no_customer = int(df["CustomerID"].isna().sum())
+k1, k2, k3, k4, k5, k6 = st.columns(6)
+k1.metric("Total visits", f"{len(df):,}")
+k2.metric(
+    "Unique customers (all)" if is_all else "Unique customers",
+    f"{df['CustomerID'].nunique():,}",
+    help=("Distinct customers across all restaurants. " if is_all else "")
+    + (f"{no_customer:,} visits with no customer recorded are not counted." if no_customer else ""),
+)
+k3.metric("Food spend", money(food_total))
+k4.metric("Alcohol spend", money(alcohol_total))
+k5.metric("Avg wait (min)", f"{df['WaitTime'].mean():.1f}")
+k6.metric("Avg party size", f"{df['PartySize'].mean():.1f}" if df["PartySize"].notna().any() else "n/a")
+
+# ------------------------------------------------------------------ row 1
+a, b, c = st.columns([3, 1.3, 2])
+
+with a:  # visits per month (colored by year), yearly totals in the title
+    m = df.groupby("Month").size().reset_index(name="Visits")
+    yearly = df.groupby("Year").size()
+    m["Year"] = m["Month"].dt.year.map(lambda y: f"{y}: {yearly[y]:,}")  # legend doubles as yearly totals
+    fig = px.bar(m, x="Month", y="Visits", color="Year", color_discrete_sequence=SEQ)
+    fig.update_xaxes(title=None, tickformat="%b %Y")
+    fig.update_yaxes(title=None)
+    show(fig, "Visits per month (legend: total per year)")
+
+with b:  # food vs alcohol
     spend = pd.DataFrame({"Type": ["Food", "Alcohol"], "Total": [food_total, alcohol_total]})
     fig = px.pie(spend, names="Type", values="Total", hole=0.55, color="Type",
                  color_discrete_map={"Food": FOOD_COLOR, "Alcohol": ALCOHOL_COLOR})
-    fig.update_traces(textinfo="percent+label")
+    fig.update_traces(textinfo="label+percent", textposition="inside",
+                      hovertemplate="%{label}: $%{value:,.0f}<extra></extra>")
     fig.update_layout(showlegend=False)
-    st.plotly_chart(style(fig), use_container_width=True)
-with s2:
-    if is_all:
-        g = df.groupby("RestaurantName")[["FoodSpend", "AlcoholBill"]].sum().reset_index()
-        g = g.melt("RestaurantName", var_name="Type", value_name="Total")
-        x = "RestaurantName"
-    else:
-        g = df.groupby("Month")[["FoodSpend", "AlcoholBill"]].sum().reset_index()
-        g = g.melt("Month", var_name="Type", value_name="Total")
-        x = "Month"
-    g["Type"] = g["Type"].map({"FoodSpend": "Food", "AlcoholBill": "Alcohol"})
-    fig = px.bar(g, x=x, y="Total", color="Type", barmode="group",
-                 color_discrete_map={"Food": FOOD_COLOR, "Alcohol": ALCOHOL_COLOR})
-    fig.update_xaxes(title=None)
-    fig.update_yaxes(title="Spend ($)", tickprefix="$")
-    st.plotly_chart(style(fig), use_container_width=True)
+    show(fig, f"Food {money(food_total)} vs. alcohol {money(alcohol_total)}")
 
-# Payment & meal type
-p1, p2 = st.columns(2)
-with p1:
-    st.subheader("Most common payment methods")
-    st.plotly_chart(count_chart(df, "PaymentTypeName", "Payment method"), use_container_width=True)
-with p2:
-    st.subheader("Most common meal types")
-    st.plotly_chart(count_chart(df, "MealTypeName", "Meal type"), use_container_width=True)
-
-# ------------------------------------------------ timing, party size, waits
-st.divider()
-st.header("Visit timing, party size and wait time")
-
-timed = df.dropna(subset=["VisitHour"])
-no_time = len(df) - len(timed)
-if no_time:
-    st.caption(f"{no_time:,} visits have no visit time recorded and are left out of the hourly charts.")
-
-t1, t2 = st.columns(2)
-with t1:
-    st.subheader("Visits by hour of day")
+with c:  # visit time
+    timed = df.dropna(subset=["VisitHour"])
     if timed.empty:
         st.info("No visit times recorded for this selection.")
     else:
-        by_meal = st.toggle("Color by meal type", value=False)
         hours = list(range(int(timed["VisitHour"].min()), int(timed["VisitHour"].max()) + 1))
         labels = [hour_label(h) for h in hours]
-        if by_meal:
-            h = timed.groupby(["VisitHour", "MealTypeName"]).size().reset_index(name="Visits")
-            h["Hour"] = h["VisitHour"].map(hour_label)
-            fig = px.bar(h, x="Hour", y="Visits", color="MealTypeName", color_discrete_sequence=SEQ,
-                         category_orders={"Hour": labels})
-        else:
-            h = timed.groupby("VisitHour").size().reindex(hours, fill_value=0).reset_index(name="Visits")
-            h["Hour"] = h["VisitHour"].map(hour_label)
-            fig = px.bar(h, x="Hour", y="Visits", color_discrete_sequence=[FOOD_COLOR],
-                         category_orders={"Hour": labels})
-        fig.update_xaxes(type="category", title=None)
-        st.plotly_chart(style(fig), use_container_width=True)
-with t2:
-    st.subheader("Average wait by hour of day")
-    if timed.empty:
-        st.info("No visit times recorded for this selection.")
-    else:
-        w = timed.groupby("VisitHour")["WaitTime"].mean().reindex(hours).reset_index(name="AvgWait")
-        w["Hour"] = w["VisitHour"].map(hour_label)
-        fig = px.bar(w, x="Hour", y="AvgWait", color_discrete_sequence=[ALCOHOL_COLOR],
+        h = timed.groupby("VisitHour").size().reindex(hours, fill_value=0).rename_axis("VisitHour").reset_index(name="Visits")
+        h["Hour"] = h["VisitHour"].map(hour_label)
+        fig = px.bar(h, x="Hour", y="Visits", color_discrete_sequence=[FOOD_COLOR],
                      category_orders={"Hour": labels})
         fig.update_xaxes(type="category", title=None)
-        fig.update_yaxes(title="Minutes")
-        st.plotly_chart(style(fig), use_container_width=True)
+        fig.update_yaxes(title=None)
+        show(fig, "Visits by hour of day")
 
-# Party size and wait time
-sized = df.dropna(subset=["PartySize"]).copy()
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("Avg party size", f"{sized['PartySize'].mean():.1f}" if not sized.empty else "n/a")
-m2.metric("Average wait (min)", f"{df['WaitTime'].mean():.1f}")
-m3.metric("90th percentile wait (min)", f"{df['WaitTime'].quantile(0.9):.0f}")
-m4.metric("Longest wait (min)", f"{df['WaitTime'].max():.0f}")
-
-q1, q2 = st.columns(2)
-with q1:
-    st.subheader("Party size")
-    if sized.empty:
-        st.info("No party sizes recorded for this selection.")
-    else:
-        sized["Party"] = sized["PartySize"].clip(upper=10).astype(int).astype(str).replace({"10": "10+"})
-        order = [str(i) for i in range(1, 10)] + ["10+"]
-        ps = sized.groupby("Party").size().reset_index(name="Visits")
-        fig = px.bar(ps, x="Party", y="Visits", text="Visits", color_discrete_sequence=[FOOD_COLOR],
-                     category_orders={"Party": order})
-        fig.update_xaxes(type="category", title="Guests in party")
-        st.plotly_chart(style(fig), use_container_width=True)
-with q2:
-    st.subheader("Wait time distribution")
-    fig = px.histogram(df, x="WaitTime", nbins=30, color_discrete_sequence=[ALCOHOL_COLOR])
-    fig.add_vline(x=df["WaitTime"].mean(), line_dash="dash", annotation_text="average")
-    fig.update_xaxes(title="Wait (minutes)")
-    fig.update_yaxes(title="Visits")
-    st.plotly_chart(style(fig), use_container_width=True)
+# ------------------------------------------------------------------ row 2
+d1, d2, d3, d4 = st.columns(4)
 
 if is_all:
-    st.subheader("Average wait and party size by restaurant")
-    comp = df.groupby("RestaurantName").agg(
-        AvgWait=("WaitTime", "mean"), AvgParty=("PartySize", "mean")
+    per = df.groupby("RestaurantName").agg(
+        Visits=("VisitID", "count"), UniqueCustomers=("CustomerID", "nunique")
     ).reset_index()
-    c_a, c_b = st.columns(2)
-    with c_a:
-        fig = px.bar(comp, x="AvgWait", y="RestaurantName", orientation="h",
-                     color_discrete_sequence=[ALCOHOL_COLOR])
-        fig.update_yaxes(categoryorder="total ascending", title=None)
-        fig.update_xaxes(title="Average wait (minutes)")
-        st.plotly_chart(style(fig), use_container_width=True)
-    with c_b:
-        fig = px.bar(comp, x="AvgParty", y="RestaurantName", orientation="h",
-                     color_discrete_sequence=[FOOD_COLOR])
-        fig.update_yaxes(categoryorder="total ascending", title=None)
-        fig.update_xaxes(title="Average party size")
-        st.plotly_chart(style(fig), use_container_width=True)
+    with d1:
+        hbar(per, "Visits", "RestaurantName", "Total visits per restaurant", FOOD_COLOR)
+    with d2:
+        hbar(per, "UniqueCustomers", "RestaurantName", "Unique customers per restaurant", ALCOHOL_COLOR)
+else:
+    sized = df.dropna(subset=["PartySize"]).copy()
+    with d1:
+        if sized.empty:
+            st.info("No party sizes recorded.")
+        else:
+            sized["Party"] = sized["PartySize"].clip(upper=10).astype(int).astype(str).replace({"10": "10+"})
+            order = [str(i) for i in range(1, 10)] + ["10+"]
+            ps = sized.groupby("Party").size().reset_index(name="Visits")
+            fig = px.bar(ps, x="Party", y="Visits", text="Visits", color_discrete_sequence=[FOOD_COLOR],
+                         category_orders={"Party": order})
+            fig.update_xaxes(type="category", title=None)
+            fig.update_yaxes(title=None, visible=False)
+            show(fig, "Visits by party size")
+    with d2:
+        fig = px.histogram(df, x="WaitTime", nbins=25, color_discrete_sequence=[ALCOHOL_COLOR])
+        fig.add_vline(x=df["WaitTime"].mean(), line_dash="dash", annotation_text="avg")
+        fig.update_xaxes(title=None)
+        fig.update_yaxes(title=None)
+        show(fig, "Wait time (minutes)")
 
-with st.expander("View underlying visits"):
-    st.dataframe(
-        df.drop(columns=["Month", "Year", "VisitHour"]).sort_values("VisitDate", ascending=False),
-        use_container_width=True, hide_index=True,
-    )
+with d3:
+    count_bar(df, "PaymentTypeName", "Payment method", "Most common payment methods")
+with d4:
+    count_bar(df, "MealTypeName", "Meal type", "Most common meal types")
