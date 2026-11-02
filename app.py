@@ -48,7 +48,7 @@ def load_visits() -> pd.DataFrame:
     # Only the columns the dashboard needs (no SSN or other personal data).
     query = """
         SELECT v.VisitID, v.RestaurantID, r.RestaurantName, r.City, r.State,
-               v.CustomerID, v.VisitDate, v.PartySize, v.WaitTime,
+               v.CustomerID, v.VisitDate, v.VisitTime, v.PartySize, v.WaitTime,
                v.FoodBill, v.TipAmount, v.FoodDiscountPercentage,
                v.orderedAlcohol, v.AlcoholBill,
                m.MealType AS MealTypeName, p.PaymentType AS PaymentTypeName
@@ -59,6 +59,8 @@ def load_visits() -> pd.DataFrame:
     """
     df = pd.read_sql(query, get_engine())
     df["VisitDate"] = pd.to_datetime(df["VisitDate"])
+    # TIME columns arrive as timedelta; keep the hour of day (NaN when no time was recorded)
+    df["VisitHour"] = pd.to_timedelta(df["VisitTime"]).dt.components.hours
     for col in ["FoodBill", "TipAmount", "FoodDiscountPercentage", "AlcoholBill"]:
         df[col] = df[col].astype(float)
     df["Month"] = df["VisitDate"].dt.to_period("M").dt.to_timestamp()
@@ -69,6 +71,10 @@ def load_visits() -> pd.DataFrame:
 # ----------------------------------------------------------------- helpers
 def money(x: float) -> str:
     return f"${x:,.0f}"
+
+
+def hour_label(h: int) -> str:
+    return f"{int(h) % 12 or 12} {'AM' if h < 12 else 'PM'}"
 
 
 def style(fig, height=340):
@@ -246,8 +252,99 @@ with p2:
     st.subheader("Most common meal types")
     st.plotly_chart(count_chart(df, "MealTypeName", "Meal type"), use_container_width=True)
 
+# ------------------------------------------------ timing, party size, waits
+st.divider()
+st.header("Visit timing, party size and wait time")
+
+timed = df.dropna(subset=["VisitHour"])
+no_time = len(df) - len(timed)
+if no_time:
+    st.caption(f"{no_time:,} visits have no visit time recorded and are left out of the hourly charts.")
+
+t1, t2 = st.columns(2)
+with t1:
+    st.subheader("Visits by hour of day")
+    if timed.empty:
+        st.info("No visit times recorded for this selection.")
+    else:
+        by_meal = st.toggle("Color by meal type", value=False)
+        hours = list(range(int(timed["VisitHour"].min()), int(timed["VisitHour"].max()) + 1))
+        labels = [hour_label(h) for h in hours]
+        if by_meal:
+            h = timed.groupby(["VisitHour", "MealTypeName"]).size().reset_index(name="Visits")
+            h["Hour"] = h["VisitHour"].map(hour_label)
+            fig = px.bar(h, x="Hour", y="Visits", color="MealTypeName", color_discrete_sequence=SEQ,
+                         category_orders={"Hour": labels})
+        else:
+            h = timed.groupby("VisitHour").size().reindex(hours, fill_value=0).reset_index(name="Visits")
+            h["Hour"] = h["VisitHour"].map(hour_label)
+            fig = px.bar(h, x="Hour", y="Visits", color_discrete_sequence=[FOOD_COLOR],
+                         category_orders={"Hour": labels})
+        fig.update_xaxes(type="category", title=None)
+        st.plotly_chart(style(fig), use_container_width=True)
+with t2:
+    st.subheader("Average wait by hour of day")
+    if timed.empty:
+        st.info("No visit times recorded for this selection.")
+    else:
+        w = timed.groupby("VisitHour")["WaitTime"].mean().reindex(hours).reset_index(name="AvgWait")
+        w["Hour"] = w["VisitHour"].map(hour_label)
+        fig = px.bar(w, x="Hour", y="AvgWait", color_discrete_sequence=[ALCOHOL_COLOR],
+                     category_orders={"Hour": labels})
+        fig.update_xaxes(type="category", title=None)
+        fig.update_yaxes(title="Minutes")
+        st.plotly_chart(style(fig), use_container_width=True)
+
+# Party size and wait time
+sized = df.dropna(subset=["PartySize"]).copy()
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("Avg party size", f"{sized['PartySize'].mean():.1f}" if not sized.empty else "n/a")
+m2.metric("Median wait (min)", f"{df['WaitTime'].median():.0f}")
+m3.metric("90th percentile wait (min)", f"{df['WaitTime'].quantile(0.9):.0f}")
+m4.metric("Longest wait (min)", f"{df['WaitTime'].max():.0f}")
+
+q1, q2 = st.columns(2)
+with q1:
+    st.subheader("Party size")
+    if sized.empty:
+        st.info("No party sizes recorded for this selection.")
+    else:
+        sized["Party"] = sized["PartySize"].clip(upper=10).astype(int).astype(str).replace({"10": "10+"})
+        order = [str(i) for i in range(1, 10)] + ["10+"]
+        ps = sized.groupby("Party").size().reset_index(name="Visits")
+        fig = px.bar(ps, x="Party", y="Visits", text="Visits", color_discrete_sequence=[FOOD_COLOR],
+                     category_orders={"Party": order})
+        fig.update_xaxes(type="category", title="Guests in party")
+        st.plotly_chart(style(fig), use_container_width=True)
+with q2:
+    st.subheader("Wait time distribution")
+    fig = px.histogram(df, x="WaitTime", nbins=30, color_discrete_sequence=[ALCOHOL_COLOR])
+    fig.add_vline(x=df["WaitTime"].median(), line_dash="dash", annotation_text="median")
+    fig.update_xaxes(title="Wait (minutes)")
+    fig.update_yaxes(title="Visits")
+    st.plotly_chart(style(fig), use_container_width=True)
+
+if is_all:
+    st.subheader("Average wait and party size by restaurant")
+    comp = df.groupby("RestaurantName").agg(
+        AvgWait=("WaitTime", "mean"), AvgParty=("PartySize", "mean")
+    ).reset_index()
+    c_a, c_b = st.columns(2)
+    with c_a:
+        fig = px.bar(comp, x="AvgWait", y="RestaurantName", orientation="h",
+                     color_discrete_sequence=[ALCOHOL_COLOR])
+        fig.update_yaxes(categoryorder="total ascending", title=None)
+        fig.update_xaxes(title="Average wait (minutes)")
+        st.plotly_chart(style(fig), use_container_width=True)
+    with c_b:
+        fig = px.bar(comp, x="AvgParty", y="RestaurantName", orientation="h",
+                     color_discrete_sequence=[FOOD_COLOR])
+        fig.update_yaxes(categoryorder="total ascending", title=None)
+        fig.update_xaxes(title="Average party size")
+        st.plotly_chart(style(fig), use_container_width=True)
+
 with st.expander("View underlying visits"):
     st.dataframe(
-        df.drop(columns=["Month", "Year"]).sort_values("VisitDate", ascending=False),
+        df.drop(columns=["Month", "Year", "VisitHour"]).sort_values("VisitDate", ascending=False),
         use_container_width=True, hide_index=True,
     )
